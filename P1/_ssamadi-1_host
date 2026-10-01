@@ -1,0 +1,2 @@
+# Alpine is tiny and its userland is busybox (sh, ip, ping, ifconfig...).
+FROM alpine:latest
