@@ -1,0 +1,28 @@
+#!/bin/sh
+# =====================================================================
+# routeur-ssamadi-1 — P2 VXLAN, GROUP mode (dynamic multicast)
+# Run AFTER _ssamadi-1_s: the underlay IP (10.1.1.1), br0 and eth1 are kept;
+# only the VTEP is replaced: static (remote 10.1.1.2) -> group (239.1.1.1).
+# Usage: paste into the router's AUXILIARY console.
+# =====================================================================
+IP=/sbin/ip   # full iproute2 — the console's BusyBox "ip" cannot create VXLAN interfaces
+
+# 1) Remove the static VTEP. A VXLAN interface's mode cannot be changed once created,
+#    so it is deleted (this also unplugs it from br0) and created again.
+$IP link del vxlan10
+
+# 2) New VTEP — VNI 10, GROUP mode.
+#    group 239.1.1.1 : broadcast / unknown-unicast / multicast (BUM) frames are sent once
+#                      to this multicast group; the switch delivers them to every member.
+#                      239.0.0.0/8 = private ("administratively scoped") multicast range.
+#    dev eth0        : the interface that joins the group (sends the IGMP membership).
+#    No "remote": peers are learned from traffic (flood-and-learn), then reached in unicast.
+$IP link add vxlan10 type vxlan id 10 dev eth0 group 239.1.1.1 dstport 4789
+$IP link set vxlan10 up      # a new interface starts DOWN: without this, nothing passes
+
+# 3) Plug the new VTEP back into the bridge (eth1 is still attached from static mode).
+$IP link set vxlan10 master br0
+
+# Checks: ip -d link show vxlan10    (vxlan id 10 group 239.1.1.1)
+#         ip maddr show dev eth0      (inet 239.1.1.1 = group joined)
+#         bridge fdb show dev vxlan10 (00:00:00:00:00:00 dst 239.1.1.1 + learned MACs)

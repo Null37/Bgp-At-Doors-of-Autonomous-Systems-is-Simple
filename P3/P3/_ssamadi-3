@@ -1,0 +1,79 @@
+# =====================================================================
+# routeur-ssamadi-3 — P3 leaf (VTEP) — host-ssamadi-2 behind eth0
+# Usage: paste into the router's AUXILIARY console on a freshly started node.
+# =====================================================================
+
+# ---------- Part 1 — Linux: addresses ----------
+IP=/sbin/ip   # full iproute2 (the console's BusyBox "ip" is limited)
+
+# Cable B to the RR: network 10.1.1.4/30 — RR is .5, this leaf takes .6
+$IP addr add 10.1.1.6/30 dev eth1
+
+# Loopback /32: fixed identity = router-id, BGP source AND VTEP address (VXLAN "local")
+$IP addr add 1.1.1.3/32 dev lo
+
+# eth0 (to host-ssamadi-2) gets NO IP: it will be a bridge port (Layer 2 only)
+
+# ---------- Part 1b — Linux: br0 + vxlan10 (Phase 4, added later) ----------
+# # ---------- Part 2 — FRR (vtysh): OSPF underlay ----------
+# Lines between the EOF markers are typed into vtysh (FRR's shell).
+vtysh << 'EOF'
+conf t
+! OSPF: learn the other cables and loopbacks through the RR
+router ospf
+ ! router-id = this router's loopback
+ ospf router-id 1.1.1.3
+ ! cable B: eth1 10.1.1.6/30 -> network 10.1.1.4/30 (same network as the RR's 10.1.1.5)
+ network 10.1.1.4/30 area 0
+ ! loopback = this VTEP's address, advertised so other VTEPs can reach it
+ network 1.1.1.3/32 area 0
+ ! eth0 (host side) is NOT in OSPF: overlay, bridge port, no IP
+exit
+! ---------- Phase 3: BGP / EVPN (added next) ----------
+end
+EOF
+
+! ---------- Phase 3: BGP session to the route reflector ----------
+! AS 1 for every router -> iBGP
+router bgp 1
+ ! BGP name = this router's loopback
+ bgp router-id 1.1.1.3
+ ! one single session: to the RR's loopback (reachable thanks to OSPF)
+ neighbor 1.1.1.1 remote-as 1
+ ! send the session FROM the loopback 1.1.1.3 (inside the RR's listen range 1.1.1.0/29);
+ ! without it the source would be the cable address 10.1.1.6 and the RR would refuse it
+ neighbor 1.1.1.1 update-source lo
+exit
+! ---------- Phase 5: EVPN (added later) ----------
+end
+EOF
+
+
+# br0: software switch joining the host cable and the VXLAN tunnel into one LAN (as in P2)
+$IP link add br0 type bridge
+$IP link set br0 up
+
+# vxlan10 = VTEP for VNI 10 (subject), standard UDP port 4789
+#   local 1.1.1.3 : VTEP address = loopback (outer source IP; announced in EVPN type 3)
+#   no remote/group: the other VTEPs are learned from BGP EVPN type 3 routes
+#   no dev        : tunnel packets to other loopbacks leave via the OSPF route (FIB)
+#   nolearning    : MAC locations come from BGP EVPN type 2 routes, not from traffic
+$IP link add vxlan10 type vxlan id 10 dstport 4789 local 1.1.1.3 nolearning
+$IP link set vxlan10 up
+
+# Plug the host side (eth0 -> host-ssamadi-2) and the tunnel into br0. eth0 keeps NO IP.
+$IP link set eth0 master br0
+$IP link set vxlan10 master br0
+
+! ---------- Phase 5: EVPN ----------
+router bgp 1
+ ! settings below apply to the EVPN address family (MP-BGP "channel" for Layer 2 info)
+ address-family l2vpn evpn
+  ! open the EVPN channel with the RR
+  neighbor 1.1.1.1 activate
+  ! announce every local VNI (vxlan10 -> VNI 10, local loopback):
+  !  - type 3 at once: "I am a VTEP for VNI 10"
+  !  - type 2 for each host MAC learned on br0
+  advertise-all-vni
+ exit-address-family
+exit

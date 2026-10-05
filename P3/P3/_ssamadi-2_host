@@ -1,0 +1,10 @@
+#!/bin/sh
+# =====================================================================
+# host-ssamadi-2 — P3, behind routeur-ssamadi-3 (VTEP 1.1.1.3)
+# Usage: paste into the host's main console.
+# =====================================================================
+# eth0 = the interface cabled to routeur-ssamadi-3 (GNS3 link e0, MAC ...:00).
+# Same subnet as host-1 and host-3 (20.1.1.0/24): one LAN through VXLAN VNI 10.
+ip addr add 20.1.1.2/24 dev eth0
+
+# Test: ping -c 3 20.1.1.1

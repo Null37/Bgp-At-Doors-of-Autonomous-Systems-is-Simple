@@ -1,0 +1,19 @@
+#!/bin/sh
+# routeur-ssamadi-2 — P2 VXLAN, STATIC mode (unicast to a known VTEP)
+# Paste into the router's auxiliary console.
+IP=/sbin/ip   # full iproute2: BusyBox's "ip" cannot create VXLAN interfaces
+
+# Underlay: this router's VTEP address on eth0 (link to Switch-ssamadi)
+$IP addr add 10.1.1.2/24 dev eth0
+
+# br0: software switch joining the host port and the tunnel
+$IP link add br0 type bridge
+$IP link set br0 up
+
+# VTEP: VNI 10, wrapped packets sent from 10.1.1.2 to the remote VTEP 10.1.1.1 on UDP 4789
+$IP link add vxlan10 type vxlan id 10 dev eth0 remote 10.1.1.1 local 10.1.1.2 dstport 4789
+$IP link set vxlan10 up
+
+# Plug the host side (eth1) and the tunnel (vxlan10) into br0
+$IP link set eth1 master br0
+$IP link set vxlan10 master br0

@@ -1,0 +1,72 @@
+# =====================================================================
+# routeur-ssamadi-1 — P3 Route Reflector (RR). Not a VTEP: no bridge, no VXLAN.
+# Usage: paste into the router's AUXILIARY console on a freshly started node.
+# =====================================================================
+
+# ---------- Part 1 — Linux: addresses ----------
+IP=/sbin/ip   # full iproute2 (the console's BusyBox "ip" is limited)
+
+# One /30 per cable: each cable is its own network; the RR takes the first usable address
+$IP addr add 10.1.1.1/30 dev eth0     # cable A -> routeur-ssamadi-2 (10.1.1.0/30)
+$IP addr add 10.1.1.5/30 dev eth1     # cable B -> routeur-ssamadi-3 (10.1.1.4/30)
+$IP addr add 10.1.1.9/30 dev eth2     # cable C -> routeur-ssamadi-4 (10.1.1.8/30)
+
+# Loopback /32: the RR's fixed identity (OSPF/BGP router-id, BGP sessions target it)
+$IP addr add 1.1.1.1/32 dev lo
+
+# Act as a router: forward packets between its cables it 1 by default but to insure will work we set it 
+sysctl -w net.ipv4.ip_forward=1
+
+# ---------- Part 2 — FRR (vtysh): OSPF underlay ----------
+# Lines between the EOF markers are typed into vtysh (FRR's shell).
+vtysh << 'EOF'
+conf t
+! OSPF: routers share their networks, so every cable and loopback becomes reachable
+router ospf
+ ! router-id = OSPF name of this router = its loopback (never changes)
+ ospf router-id 1.1.1.1
+ ! "network <net> area 0": OSPF runs (Hellos to 224.0.0.5) on the interface inside <net>
+ ! and advertises <net>. <net> = interface address with host bits set to 0.
+ ! cable A: eth0 10.1.1.1/30 -> network 10.1.1.0/30
+ network 10.1.1.0/30 area 0
+ ! cable B: eth1 10.1.1.5/30 -> network 10.1.1.4/30
+ network 10.1.1.4/30 area 0
+ ! cable C: eth2 10.1.1.9/30 -> network 10.1.1.8/30
+ network 10.1.1.8/30 area 0
+ ! loopback /32: lets the leaves reach 1.1.1.1 (target of their BGP sessions)
+ network 1.1.1.1/32 area 0
+exit
+! ---------- Phase 3: BGP route reflector (added next) ----------
+end
+EOF
+
+! ---------- Phase 3: BGP (route reflector, dynamic leaves) ----------
+! AS 1 for every router -> all sessions are iBGP
+router bgp 1
+ ! BGP name of the RR = its loopback
+ bgp router-id 1.1.1.1
+ ! Peer group = template of settings for neighbors that are not listed one by one
+ neighbor LEAFS peer-group
+ neighbor LEAFS remote-as 1
+ ! sessions are loopback <-> loopback: the RR answers from 1.1.1.1
+ neighbor LEAFS update-source lo
+ ! dynamic relationships: accept any leaf whose loopback is in 1.1.1.0/29 (.0-.7)
+ ! leaves 1.1.1.2/.3/.4 = last byte 00000010/011/100: 5 common bits -> 3 free -> /29
+ bgp listen range 1.1.1.0/29 peer-group LEAFS
+exit
+! ---------- Phase 5: EVPN + route reflection (added later) ----------
+end
+EOF
+
+! ---------- Phase 5: EVPN channel + route reflection ----------
+router bgp 1
+ ! settings below apply to the EVPN address family (MP-BGP "channel" for Layer 2 info)
+ address-family l2vpn evpn
+  ! open the EVPN channel with every leaf (through the LEAFS template)
+  neighbor LEAFS activate
+  ! leaves are route-reflector clients: the RR passes each leaf's EVPN routes
+  ! (type 3 / type 2) to the other leaves, keeping the original next hop
+  neighbor LEAFS route-reflector-client
+ exit-address-family
+ ! no "advertise-all-vni": the RR has no VNI, it is not a VTEP
+exit

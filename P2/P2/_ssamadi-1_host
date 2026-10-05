@@ -1,0 +1,3 @@
+#!/bin/sh
+# host-ssamadi-1 — P2: overlay address (same LAN as host-2 through the VXLAN)
+ip addr add 30.1.1.1/24 dev eth0
